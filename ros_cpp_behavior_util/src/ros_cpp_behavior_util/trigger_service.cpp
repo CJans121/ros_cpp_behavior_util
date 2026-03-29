@@ -15,25 +15,9 @@ BT::PortsList TriggerService::providedPorts() {
 rclcpp::Node::SharedPtr TriggerService::getNode() const {
     rclcpp::Node::SharedPtr node;
     if (!config().blackboard->get("node", node) || !node) {
-        RCLCPP_ERROR(getLogger(), "\"node\" not found on blackboard");
-        return nullptr;
+        throw BT::RuntimeError("[TriggerService] \"node\" not found on blackboard");
     }
     return node;
-}
-
-rclcpp::Logger TriggerService::getLogger() const {
-    rclcpp::Node::SharedPtr node;
-    if (config().blackboard->get("node", node) && node) {
-        return node->get_logger();
-    }
-    return rclcpp::get_logger("TriggerService");
-}
-
-std::string TriggerService::serviceName() const {
-    return std::visit([](const auto& c) -> std::string {
-        if constexpr (std::is_same_v<std::decay_t<decltype(c)>, std::monostate>) return "<none>";
-        else return c->get_service_name();
-    }, client_);
 }
 
 void TriggerService::reset() {
@@ -49,25 +33,25 @@ bool TriggerService::dispatchRequest() {
         auto& c = std::get<EmptyClientPtr>(client_);
         future_ = EmptyFuturePair{c, c->async_send_request(std::make_shared<std_srvs::srv::Empty::Request>())};
     } else {
-        RCLCPP_ERROR(getLogger(), "dispatchRequest called with no active client");
+        RCLCPP_ERROR(node_->get_logger(), "dispatchRequest called with no active client");
         return false;
     }
     return true;
 }
 
-rclcpp::FutureReturnCode TriggerService::spinFuture(const rclcpp::Node::SharedPtr& node) {
+rclcpp::FutureReturnCode TriggerService::spinFuture() {
     constexpr auto SPIN_DURATION = spin_future_duration_;
     return std::visit([&](auto& pair) -> rclcpp::FutureReturnCode {
         using T = std::decay_t<decltype(pair)>;
         if constexpr (std::is_same_v<T, std::monostate>) {
-            RCLCPP_ERROR(getLogger(), "Invalid state: no active future");
+            RCLCPP_ERROR(node_->get_logger(), "Invalid state: no active future");
             return rclcpp::FutureReturnCode::INTERRUPTED;
         } else {
             if (!pair.future.has_value()) {
-                RCLCPP_ERROR(getLogger(), "Invalid state: empty future");
+                RCLCPP_ERROR(node_->get_logger(), "Invalid state: empty future");
                 return rclcpp::FutureReturnCode::INTERRUPTED;
             }
-            return rclcpp::spin_until_future_complete(node, *pair.future, SPIN_DURATION);
+            return rclcpp::spin_until_future_complete(node_, *pair.future, SPIN_DURATION);
         }
     }, future_);
 }
@@ -78,15 +62,15 @@ BT::NodeStatus TriggerService::handleSuccess() {
         const auto resp = pair.future->get();
         pair.future = std::nullopt;
         if (!resp->success) {
-            RCLCPP_ERROR(getLogger(), "Service \"%s\" returned failure: %s",
-                serviceName().c_str(), resp->message.c_str());
+            RCLCPP_ERROR(node_->get_logger(), "Service \"%s\" returned failure: %s",
+                service_name_.c_str(), resp->message.c_str());
             return BT::NodeStatus::FAILURE;
         }
     } else {
         std::get<EmptyFuturePair>(future_).future = std::nullopt;
     }
 
-    RCLCPP_INFO(getLogger(), "Service \"%s\" completed successfully", serviceName().c_str());
+    RCLCPP_INFO(node_->get_logger(), "Service \"%s\" completed successfully", service_name_.c_str());
     reset();
     return BT::NodeStatus::SUCCESS;
 }
@@ -99,9 +83,9 @@ BT::NodeStatus TriggerService::onStart() {
     // Get required port values
     const auto service_name = getInput<std::string>("name");
     if (!service_name) {
-        RCLCPP_ERROR(getLogger(), "Could not read \"name\" port: %s", service_name.error().c_str());
-        return BT::NodeStatus::FAILURE;
+        throw BT::RuntimeError("[TriggerService] Missing required port \"name\": " + service_name.error());
     }
+    service_name_ = service_name.value();
 
     // Get optional port values
     const auto timeout_input = getInput<float>("timeout");
@@ -110,60 +94,53 @@ BT::NodeStatus TriggerService::onStart() {
             std::chrono::duration<float>(timeout_input.value()));
     }
 
-    const rclcpp::Node::SharedPtr node = getNode();
-    if (!node) { return BT::NodeStatus::FAILURE; }
+    node_ = getNode();
 
     const auto srv_type = getInput<std::string>("srv_type");
     if (!srv_type || srv_type.value() == "Trigger") {
-        client_ = node->create_client<std_srvs::srv::Trigger>(service_name.value());
+        client_ = node_->create_client<std_srvs::srv::Trigger>(service_name_);
     }
     else if (srv_type.value() == "Empty") {
-        client_ = node->create_client<std_srvs::srv::Empty>(service_name.value());
-	}
-    else {
-	RCLCPP_ERROR(getLogger(), "Invalid \"srv_type\" port value \"%s\", expected \"Trigger\" or \"Empty\"",
-	    srv_type.value().c_str());
-	return BT::NodeStatus::FAILURE;
+        client_ = node_->create_client<std_srvs::srv::Empty>(service_name_);
     }
-    // EoF optional port value handling
-    
-    rclcpp::spin_some(node);
+    else {
+        throw BT::RuntimeError("[TriggerService] Invalid \"srv_type\" port value \"" + srv_type.value() + "\", expected \"Trigger\" or \"Empty\"");
+    }
+
+    rclcpp::spin_some(node_);
     const bool server_found = std::visit([](const auto& c) -> bool {
         if constexpr (std::is_same_v<std::decay_t<decltype(c)>, std::monostate>) return false;
         else return c->wait_for_service(wait_for_service_timeout_);
     }, client_);
 
     if (!server_found) {
-        RCLCPP_ERROR(getLogger(), "Service server \"%s\" not found, aborting", service_name.value().c_str());
+        RCLCPP_ERROR(node_->get_logger(), "Service server \"%s\" not found, aborting", service_name_.c_str());
         return BT::NodeStatus::FAILURE;
     }
 
-    service_call_time_ = node->now();
+    service_call_time_ = node_->now();
     if (!dispatchRequest()) {
         return BT::NodeStatus::FAILURE;
     }
 
-    RCLCPP_INFO(getLogger(), "Request sent to \"%s\"", serviceName().c_str());
+    RCLCPP_INFO(node_->get_logger(), "Request sent to \"%s\"", service_name_.c_str());
     return BT::NodeStatus::RUNNING;
 }
 
 BT::NodeStatus TriggerService::onRunning() {
-    const rclcpp::Node::SharedPtr node = getNode();
-    if (!node) { return BT::NodeStatus::FAILURE; }
-
-    const rclcpp::Duration elapsed = node->now() - service_call_time_;
+    const rclcpp::Duration elapsed = node_->now() - service_call_time_;
     if (elapsed > rclcpp::Duration(timeout_)) {
-        RCLCPP_ERROR(getLogger(), "Timed out waiting for service \"%s\"", serviceName().c_str());
+        RCLCPP_ERROR(node_->get_logger(), "Timed out waiting for service \"%s\"", service_name_.c_str());
         onHalted();
         return BT::NodeStatus::FAILURE;
     }
 
-    switch (spinFuture(node)) {
+    switch (spinFuture()) {
         case rclcpp::FutureReturnCode::TIMEOUT:
             return BT::NodeStatus::RUNNING;
 
         case rclcpp::FutureReturnCode::INTERRUPTED:
-            RCLCPP_ERROR(getLogger(), "Service \"%s\" interrupted", serviceName().c_str());
+            RCLCPP_ERROR(node_->get_logger(), "Service \"%s\" interrupted", service_name_.c_str());
             onHalted();
             return BT::NodeStatus::FAILURE;
 
