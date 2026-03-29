@@ -1,9 +1,4 @@
-#include "chair_manipulation/lookup_tf.hpp"
-
-#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
-
-#include <cmath>
-#include <stdexcept>
+#include "ros_cpp_behavior_util/lookup_tf.hpp"
 
 namespace ros_cpp_behavior_util
 {
