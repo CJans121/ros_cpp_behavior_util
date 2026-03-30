@@ -3,10 +3,27 @@
 namespace ros_cpp_behavior_util
 {
 
+// ── Static member definitions ─────────────────────────────────────────────────
+
+const Eigen::Matrix4d ApplyPostTransformToPose::T_tag_to_arm_approach_start_ =
+    (Eigen::Matrix4d() <<
+         0.0, -1.0, 0.0, 0.0,
+         0.0,  0.0, 1.0, 0.0,
+        -1.0,  0.0, 0.0, 0.8,
+         0.0,  0.0, 0.0, 1.0).finished();
+
+const Eigen::Matrix4d ApplyPostTransformToPose::T_tag_to_wbc_approach_start_ =
+    (Eigen::Matrix4d() <<
+         0.0, -1.0, 0.0, 0.0,
+         0.0,  0.0, 1.0, 0.0,
+        -1.0,  0.0, 0.0, 1.5,
+         0.0,  0.0, 0.0, 1.0).finished();
+
 // ── Construction ──────────────────────────────────────────────────────────────
 
-ApplyPostTransformToPose::ApplyPostTransformToPose(const std::string& name, const BT::NodeConfig& config)
-: BT::SyncActionNode(name, config)
+ApplyPostTransformToPose::ApplyPostTransformToPose(
+    const std::string& name, const BT::NodeConfig& config)
+: RosSyncActionBase(name, config)
 {
 }
 
@@ -24,58 +41,48 @@ BT::PortsList ApplyPostTransformToPose::providedPorts()
     };
 }
 
-// ── Blackboard helper ─────────────────────────────────────────────────────────
-
-rclcpp::Node::SharedPtr ApplyPostTransformToPose::getNode() const
-{
-    rclcpp::Node::SharedPtr node;
-    if (!config().blackboard->get("node", node) || !node)
-        throw BT::RuntimeError("[ApplyPostTransformToPose] \"node\" not found on blackboard");
-    return node;
-}
-
 // ── tick ──────────────────────────────────────────────────────────────────────
 
 BT::NodeStatus ApplyPostTransformToPose::tick()
 {
-    // ── Read ports ───────────────────────────────────────────────────────────
+    node_ = getNode();
+
+    // ── Read and validate ports ───────────────────────────────────────────────
     const auto input_pose_port = getInput<std::shared_ptr<PoseStamped>>("input_pose");
     if (!input_pose_port)
-        throw BT::RuntimeError("[ApplyPostTransformToPose] missing required input [input_pose]");
+        throw BT::RuntimeError(
+            "[ApplyPostTransformToPose] missing required input [input_pose]");
 
     const auto goal_pose_type_port = getInput<std::string>("goal_pose_type");
     if (!goal_pose_type_port)
-        throw BT::RuntimeError("[ApplyPostTransformToPose] missing required input [goal_pose_type]");
+        throw BT::RuntimeError(
+            "[ApplyPostTransformToPose] missing required input [goal_pose_type]");
 
-    const PoseStamped& input_msg  = *input_pose_port.value();
-    const std::string& goal_type  = goal_pose_type_port.value();
+    const PoseStamped& input_msg = *input_pose_port.value();
+    const std::string& goal_type = goal_pose_type_port.value();
 
-    // ── Validate goal_pose_type ──────────────────────────────────────────────
     if (goal_type != "wbc_approach_start" && goal_type != "arm_approach_start")
         throw BT::RuntimeError(
             "[ApplyPostTransformToPose] invalid [goal_pose_type] \"" + goal_type +
             "\", expected \"wbc_approach_start\" or \"arm_approach_start\"");
 
-    // ── Build input isometry ─────────────────────────────────────────────────
+    // ── Build input isometry ──────────────────────────────────────────────────
     Eigen::Isometry3d input_pose = Eigen::Isometry3d::Identity();
     input_pose.translation() << input_msg.pose.position.x,
                                 input_msg.pose.position.y,
                                 input_msg.pose.position.z;
+    input_pose.linear() = Eigen::Quaterniond(
+        input_msg.pose.orientation.w,
+        input_msg.pose.orientation.x,
+        input_msg.pose.orientation.y,
+        input_msg.pose.orientation.z).toRotationMatrix();
 
-    const Eigen::Quaterniond q(input_msg.pose.orientation.w,
-                                input_msg.pose.orientation.x,
-                                input_msg.pose.orientation.y,
-                                input_msg.pose.orientation.z);
-    input_pose.linear() = q.toRotationMatrix();
-
-    // ── Apply offset ─────────────────────────────────────────────────────────
-    auto node = getNode();
-
+    // ── Apply offset ──────────────────────────────────────────────────────────
     const Eigen::Matrix4d& T_offset = (goal_type == "wbc_approach_start")
         ? T_tag_to_wbc_approach_start_
         : T_tag_to_arm_approach_start_;
 
-    RCLCPP_INFO(node->get_logger(),
+    RCLCPP_INFO(node_->get_logger(),
                 "[ApplyPostTransformToPose] applying offset for goal type \"%s\"",
                 goal_type.c_str());
 
@@ -84,7 +91,7 @@ BT::NodeStatus ApplyPostTransformToPose::tick()
     // ── Build output message ──────────────────────────────────────────────────
     auto output_pose = std::make_shared<PoseStamped>();
     output_pose->header.frame_id = ref_frame_;
-    output_pose->header.stamp    = node->now();
+    output_pose->header.stamp    = node_->now();
 
     output_pose->pose.position.x = output_mat(0, 3);
     output_pose->pose.position.y = output_mat(1, 3);

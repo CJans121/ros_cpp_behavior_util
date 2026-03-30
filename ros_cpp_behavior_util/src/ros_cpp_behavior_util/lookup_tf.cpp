@@ -1,12 +1,16 @@
 #include "ros_cpp_behavior_util/lookup_tf.hpp"
 
+#include <cmath>
+#include <tf2/exceptions.h>
+#include <tf2/time.h>
+
 namespace ros_cpp_behavior_util
 {
 
 // ── Construction ─────────────────────────────────────────────────────────────
 
 LookupTF::LookupTF(const std::string& name, const BT::NodeConfig& config)
-: BT::StatefulActionNode(name, config)
+: RosStatefulActionBase(name, config)
 {
 }
 
@@ -23,23 +27,10 @@ BT::PortsList LookupTF::providedPorts()
     };
 }
 
-// ── Blackboard helper ─────────────────────────────────────────────────────────
-
-rclcpp::Node::SharedPtr LookupTF::getNode() const
-{
-    rclcpp::Node::SharedPtr node;
-    if (!config().blackboard->get("node", node) || !node)
-    {
-        throw BT::RuntimeError("[LookupTF] missing required input [node] on blackboard");
-    }
-    return node;
-}
-
 // ── onStart ───────────────────────────────────────────────────────────────────
 
 BT::NodeStatus LookupTF::onStart()
 {
-    // ── Read & validate ports ────────────────────────────────────────────────
     if (!getInput<std::string>("ref_frame", ref_frame_))
         throw BT::RuntimeError("[LookupTF] missing required input [ref_frame]");
 
@@ -49,16 +40,12 @@ BT::NodeStatus LookupTF::onStart()
     if (!getInput<double>("timeout_secs", timeout_secs_))
         throw BT::RuntimeError("[LookupTF] missing required input [timeout_secs]");
 
-    // ── Obtain the shared node ───────────────────────────────────────────────
     node_ = getNode();
 
-    // ── (Re-)initialise TF infrastructure ───────────────────────────────────
-    // Always recreate so that a halted-then-restarted node gets a fresh buffer.
+    // Always recreate so a halted-then-restarted node gets a fresh buffer.
     tf_buffer_   = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, node_,
                                                                 /*spin_thread=*/false);
-
-    // ── Reset state ──────────────────────────────────────────────────────────
     tf_queue_.clear();
     start_time_ = std::chrono::steady_clock::now();
 
@@ -73,8 +60,6 @@ BT::NodeStatus LookupTF::onStart()
 
 BT::NodeStatus LookupTF::onRunning()
 {
-
-    // ── Timeout guard ────────────────────────────────────────────────────────
     const auto   now     = std::chrono::steady_clock::now();
     const double elapsed = std::chrono::duration<double>(now - start_time_).count();
 
@@ -86,10 +71,8 @@ BT::NodeStatus LookupTF::onRunning()
         return BT::NodeStatus::FAILURE;
     }
 
-    // ── Spin to let TF callbacks through ────────────────────────────────────
     rclcpp::spin_some(node_);
 
-    // ── Attempt transform lookup ─────────────────────────────────────────────
     geometry_msgs::msg::TransformStamped tf_stamped;
     try
     {
@@ -101,17 +84,16 @@ BT::NodeStatus LookupTF::onRunning()
     }
     catch (const tf2::TransformException& ex)
     {
-        RCLCPP_DEBUG(node_->get_logger(), "[LookupTF] transform not yet available: %s", ex.what());
+        RCLCPP_DEBUG(node_->get_logger(),
+                     "[LookupTF] transform not yet available: %s", ex.what());
         return BT::NodeStatus::RUNNING;
     }
 
     // ── Accumulate samples for steady-read check ─────────────────────────────
     tf_queue_.push_back(tf_stamped);
-
     if (tf_queue_.size() > steady_required_samples_)
         tf_queue_.pop_front();
 
-    // Not enough samples yet
     if (tf_queue_.size() < steady_required_samples_)
         return BT::NodeStatus::RUNNING;
 
@@ -119,23 +101,23 @@ BT::NodeStatus LookupTF::onRunning()
     const auto& ref = tf_queue_.back().transform.translation;
     for (const auto& sample : tf_queue_)
     {
-        const auto& t = sample.transform.translation;
+        const auto& t    = sample.transform.translation;
         const double dist = std::sqrt(
             std::pow(t.x - ref.x, 2) +
             std::pow(t.y - ref.y, 2) +
             std::pow(t.z - ref.z, 2));
 
         if (dist > steady_position_threshold_)
-            return BT::NodeStatus::RUNNING;  // still converging
+            return BT::NodeStatus::RUNNING;
     }
 
-    // ── Steady read achieved — convert and publish ────────────────────────────
+    // ── Steady read achieved – convert and output ─────────────────────────────
     geometry_msgs::msg::PoseStamped pose_out;
-    pose_out.header              = tf_stamped.header;
-    pose_out.pose.position.x     = ref.x;
-    pose_out.pose.position.y     = ref.y;
-    pose_out.pose.position.z     = ref.z;
-    pose_out.pose.orientation    = tf_stamped.transform.rotation;
+    pose_out.header           = tf_stamped.header;
+    pose_out.pose.position.x  = ref.x;
+    pose_out.pose.position.y  = ref.y;
+    pose_out.pose.position.z  = ref.z;
+    pose_out.pose.orientation = tf_stamped.transform.rotation;
 
     setOutput("pose", std::make_shared<geometry_msgs::msg::PoseStamped>(pose_out));
 
@@ -150,12 +132,12 @@ BT::NodeStatus LookupTF::onRunning()
 
 void LookupTF::onHalted()
 {
-    // Release the TF listener so no callbacks fire on a stale buffer while idle.
+    // Release TF resources so no callbacks fire on a stale buffer while idle.
     tf_listener_.reset();
     tf_buffer_.reset();
     tf_queue_.clear();
 
-    RCLCPP_DEBUG(this->logger(), "[LookupTF] halted — TF resources released");
+    RCLCPP_DEBUG(node_->get_logger(), "[LookupTF] halted — TF resources released");
 }
 
 }  // namespace ros_cpp_behavior_util
