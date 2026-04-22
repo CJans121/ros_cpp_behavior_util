@@ -36,7 +36,7 @@ ament_target_dependencies(${PROJECT_NAME}
 target_link_libraries(${PROJECT_NAME} Eigen3::Eigen)
 
 install(
-  DIRECTORY include/
+  DIRECTORY include/${PROJECT_NAME}
   DESTINATION include
 )
 
