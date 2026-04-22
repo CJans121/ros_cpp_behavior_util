@@ -6,8 +6,8 @@ namespace ros_cpp_behavior_util
 BT::PortsList TriggerService::providedPorts()
 {
     return {
-        BT::InputPort<std::string>("name",     "Name of the service to call"),
-        BT::InputPort<double>     ("timeout",  2.0, "Timeout in seconds to await response"),
+        BT::InputPort<std::string>("service_name",     "Name of the service to call"),
+        BT::InputPort<double>     ("timeout_secs",  2.0, "Timeout in seconds to await response"),
         BT::InputPort<std::string>("srv_type", "Service type: \"Trigger\" (default) or \"Empty\""),
     };
 }
@@ -117,7 +117,7 @@ BT::NodeStatus TriggerService::onStart()
 {
     reset();
 
-    const auto service_name = getInput<std::string>("name");
+    const auto service_name = getInput<std::string>("service_name");
     if (!service_name)
     {
         throw BT::RuntimeError(
@@ -125,7 +125,7 @@ BT::NodeStatus TriggerService::onStart()
     }
     service_name_ = *service_name;
 
-    if (const auto t = getInput<double>("timeout"))
+    if (const auto t = getInput<double>("timeout_secs"))
     {
         timeout_ = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::duration<double>(*t));
