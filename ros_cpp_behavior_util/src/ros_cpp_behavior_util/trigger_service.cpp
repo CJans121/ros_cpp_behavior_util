@@ -28,7 +28,7 @@ void TriggerService::cleanup()
         {
             if (pair.future.has_value())
             {
-                pair.client->remove_pending_request(*pair.future);
+                pair.client->remove_pending_request(pair.future.value());
                 pair.future = std::nullopt;
             }
         }
@@ -75,7 +75,8 @@ rclcpp::FutureReturnCode TriggerService::spinFuture()
                 RCLCPP_ERROR(node_->get_logger(), "Invalid state: empty future");
                 return rclcpp::FutureReturnCode::INTERRUPTED;
             }
-            return rclcpp::spin_until_future_complete(node_, *pair.future, spin_duration);
+            return rclcpp::spin_until_future_complete(
+                node_, pair.future->future, spin_duration);
         }
     }, future_);
 }
@@ -87,7 +88,8 @@ BT::NodeStatus TriggerService::handleSuccess()
     std::string trigger_message;
     if (std::holds_alternative<TriggerFuturePair>(future_))
     {
-        const auto resp = std::get<TriggerFuturePair>(future_).future->get();
+        const auto resp =
+            std::get<TriggerFuturePair>(future_).future->future.get();
         if (!resp->success)
         {
             trigger_failed  = true;

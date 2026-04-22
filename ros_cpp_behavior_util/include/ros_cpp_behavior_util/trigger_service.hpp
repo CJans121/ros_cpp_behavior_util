@@ -50,8 +50,8 @@ private:
     template<typename SrvT>
     struct FuturePair
     {
-        std::shared_ptr<rclcpp::Client<SrvT>>                      client;
-        std::optional<typename rclcpp::Client<SrvT>::SharedFuture> future;
+        std::shared_ptr<rclcpp::Client<SrvT>>                client;
+        std::optional<typename rclcpp::Client<SrvT>::FutureAndRequestId> future;
     };
     using TriggerClientPtr  = rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr;
     using EmptyClientPtr    = rclcpp::Client<std_srvs::srv::Empty>::SharedPtr;
