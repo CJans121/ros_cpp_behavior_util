@@ -58,25 +58,23 @@ bool TriggerService::dispatchRequest()
     return true;
 }
 
-rclcpp::FutureReturnCode TriggerService::spinFuture()
+bool TriggerService::isFutureReady()
 {
-    constexpr auto spin_duration = spin_future_duration_;
-    return std::visit([&](auto& pair) -> rclcpp::FutureReturnCode {
+    return std::visit([&](auto& pair) -> bool {
         using T = std::decay_t<decltype(pair)>;
         if constexpr (std::is_same_v<T, std::monostate>)
         {
-            RCLCPP_ERROR(node_->get_logger(), "Invalid state: no active future");
-            return rclcpp::FutureReturnCode::INTERRUPTED;
+            return false;
         }
         else
         {
             if (!pair.future.has_value())
             {
-                RCLCPP_ERROR(node_->get_logger(), "Invalid state: empty future");
-                return rclcpp::FutureReturnCode::INTERRUPTED;
+                return false;
             }
-            return rclcpp::spin_until_future_complete(
-                node_, pair.future->future, spin_duration);
+
+            return pair.future->future.wait_for(std::chrono::seconds(0))
+                   == std::future_status::ready;
         }
     }, future_);
 }
@@ -88,8 +86,8 @@ BT::NodeStatus TriggerService::handleSuccess()
     std::string trigger_message;
     if (std::holds_alternative<TriggerFuturePair>(future_))
     {
-        const auto resp =
-            std::get<TriggerFuturePair>(future_).future->future.get();
+        auto& pair = std::get<TriggerFuturePair>(future_);
+        const auto resp = pair.future->future.get();
         if (!resp->success)
         {
             trigger_failed  = true;
@@ -149,7 +147,6 @@ BT::NodeStatus TriggerService::onStart()
             "\", expected \"Trigger\" or \"Empty\"");
     }
 
-    rclcpp::spin_some(node_);
     const bool server_found = std::visit([](const auto& c) -> bool {
         if constexpr (std::is_same_v<std::decay_t<decltype(c)>, std::monostate>)
             return false;
@@ -185,22 +182,12 @@ BT::NodeStatus TriggerService::onRunning()
         return BT::NodeStatus::FAILURE;
     }
 
-    switch (spinFuture())
+    if (isFutureReady())
     {
-        case rclcpp::FutureReturnCode::TIMEOUT:
-            return BT::NodeStatus::RUNNING;
-
-        case rclcpp::FutureReturnCode::INTERRUPTED:
-            RCLCPP_ERROR(node_->get_logger(),
-                "Service \"%s\" interrupted", service_name_.c_str());
-            cleanup();
-            return BT::NodeStatus::FAILURE;
-
-        case rclcpp::FutureReturnCode::SUCCESS:
-            return handleSuccess();
+        return handleSuccess();
     }
 
-    return BT::NodeStatus::FAILURE;  // unreachable; satisfies -Wreturn-type
+    return BT::NodeStatus::RUNNING;
 }
 
 void TriggerService::onHalted()

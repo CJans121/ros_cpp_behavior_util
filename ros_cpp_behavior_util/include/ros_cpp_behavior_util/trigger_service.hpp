@@ -74,7 +74,7 @@ private:
     void                     reset();
     void                     cleanup();
     bool                     dispatchRequest();
-    rclcpp::FutureReturnCode spinFuture();
+    bool                     isFutureReady();
     BT::NodeStatus           handleSuccess();
 };
 
