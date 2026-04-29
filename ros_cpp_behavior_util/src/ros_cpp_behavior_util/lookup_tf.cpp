@@ -46,6 +46,7 @@ BT::NodeStatus LookupTF::onStart()
     tf_buffer_   = std::make_unique<tf2_ros::Buffer>(node_->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, node_,
                                                                 /*spin_thread=*/false);
+    tf_buffer_->setUsingDedicatedThread(true); // tell buffer spinner exists, caller is responsible for spinning
     tf_queue_.clear();
     start_time_ = std::chrono::steady_clock::now();
 
