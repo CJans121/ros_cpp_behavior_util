@@ -71,8 +71,6 @@ BT::NodeStatus LookupTF::onRunning()
         return BT::NodeStatus::FAILURE;
     }
 
-    rclcpp::spin_some(node_);
-
     geometry_msgs::msg::TransformStamped tf_stamped;
     try
     {
